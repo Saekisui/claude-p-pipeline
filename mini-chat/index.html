@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mini-chat</title>
+<style>
+  body { margin: 0; font: 15px/1.6 system-ui, sans-serif; background: #f6f3ef; color: #222; }
+  #log { max-width: 680px; margin: 0 auto; padding: 16px 16px 140px; }
+  .msg { margin: 10px 0; padding: 10px 14px; border-radius: 14px; white-space: pre-wrap; word-break: break-word; }
+  .user { background: #d9ecff; margin-left: 20%; }
+  .assistant { background: #fff; margin-right: 10%; }
+  .thinking { color: #888; font-size: 13px; border-left: 3px solid #ddd; padding-left: 8px; margin: 4px 0; }
+  .tool { color: #6a5; font-size: 13px; margin: 4px 0; }
+  .error { color: #c33; }
+  img { max-width: 220px; border-radius: 10px; display: block; margin-top: 6px; }
+  form { position: fixed; left: 0; right: 0; bottom: 0; background: #fff; border-top: 1px solid #ddd; padding: 10px 16px; }
+  .row { max-width: 680px; margin: 0 auto; display: flex; gap: 8px; align-items: center; }
+  textarea { flex: 1; height: 44px; font: inherit; padding: 8px; }
+</style>
+</head>
+<body>
+<div id="log"></div>
+<form id="form">
+  <div class="row">
+    <input type="file" id="file" accept="image/*">
+    <textarea id="input" placeholder="说点什么…（Enter 发送）"></textarea>
+    <button type="submit" id="send">发送</button>
+    <button type="button" id="stop">停</button>
+  </div>
+</form>
+<script>
+const chatId = new URLSearchParams(location.search).get("chat") || "demo";
+const log = document.getElementById("log");
+const input = document.getElementById("input");
+const fileInput = document.getElementById("file");
+
+// 把一条消息（含 segments）画成一个气泡；流式时反复调用它重画
+function render(el, msg) {
+  el.className = `msg ${msg.role}`;
+  el.innerHTML = "";
+  if (msg.role === "user") {
+    el.textContent = msg.content || "";
+    if (msg.imageUrl) { const img = document.createElement("img"); img.src = msg.imageUrl; el.appendChild(img); }
+    return;
+  }
+  for (const s of msg.segments || []) {
+    const d = document.createElement("div");
+    if (s.kind === "thinking") { d.className = "thinking"; d.textContent = s.text; }
+    else if (s.kind === "tool") { d.className = "tool"; d.textContent = `${s.done ? "✓" : "…"} 用了工具 ${s.name}`; }
+    else d.textContent = s.text;
+    el.appendChild(d);
+  }
+  if (msg.error) { const d = document.createElement("div"); d.className = "error"; d.textContent = `出错：${msg.error}`; el.appendChild(d); }
+  log.scrollIntoView({ block: "end" });
+}
+function bubble(msg) { const el = document.createElement("div"); log.appendChild(el); render(el, msg); return el; }
+
+// 从服务器重新拉整个窗口（打开页面 / 断流之后都走这里）
+async function reload() {
+  const chat = await fetch(`/api/chat/${chatId}`).then((r) => r.json());
+  log.innerHTML = "";
+  for (const m of chat.messages) {
+    if (m.role === "user" && m.imagePath) m.imageUrl = `/uploads/${m.imagePath.split("/").pop()}`;
+    bubble(m);
+  }
+  return chat;
+}
+// 服务器还在生成 → 每 1.5 秒看一眼，等它落库
+async function waitServer() {
+  for (let i = 0; i < 400; i++) {
+    const chat = await reload();
+    if (!chat.generating) return;
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+}
+
+async function send(text) {
+  let imagePath = null, imageUrl = null;
+  const file = fileInput.files[0];
+  if (file) {
+    const dataUrl = await new Promise((ok) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.readAsDataURL(file); });
+    const up = await fetch("/upload", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dataUrl }) }).then((r) => r.json());
+    imagePath = up.path; imageUrl = up.url; fileInput.value = "";
+  }
+  bubble({ role: "user", content: text, imageUrl });
+  const reply = { role: "assistant", segments: [] };
+  const el = bubble(reply);
+  const last = () => reply.segments[reply.segments.length - 1];
+  const append = (kind, t) => { if (last()?.kind !== kind) reply.segments.push({ kind, text: "" }); last().text += t; };
+
+  let gotEnd = false;
+  try {
+    const res = await fetch("/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chatId, text, imagePath }) });
+    if (!res.ok) throw new Error((await res.json()).error);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const events = buf.split("\n\n");
+      buf = events.pop();
+      for (const evt of events) {
+        const line = evt.split("\n").find((l) => l.startsWith("data: "));
+        if (!line) continue; // ": ping" 心跳，没有 data，跳过
+        const data = JSON.parse(line.slice(6));
+        if (data.type === "thinking") append("thinking", data.text);
+        if (data.type === "text") append("text", data.text);
+        if (data.type === "tool") {
+          const i = reply.segments.findIndex((s) => s.kind === "tool" && s.id === data.tool.id);
+          if (i >= 0) reply.segments[i] = data.tool; else reply.segments.push(data.tool);
+        }
+        if (data.type === "error") { reply.error = data.error; gotEnd = true; }
+        if (data.type === "done") gotEnd = true;
+        render(el, reply);
+      }
+    }
+  } catch (e) { reply.error = e.message; render(el, reply); gotEnd = true; }
+  if (!gotEnd) await waitServer(); // 流断了但服务器还在跑：去那边等结果
+}
+
+document.getElementById("form").onsubmit = (e) => { e.preventDefault(); const t = input.value.trim(); if (!t && !fileInput.files[0]) return; input.value = ""; send(t); };
+input.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); document.getElementById("form").requestSubmit(); } };
+document.getElementById("stop").onclick = () => fetch("/stop", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chatId }) });
+waitServer(); // 打开页面先把历史拉回来；如果上一句还在生成，就接着等
+</script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "name": "claude-p-pipeline",
+  "version": "1.0.0",
+  "private": true,
+  "description": "用自己的 Claude 订阅，把 claude -p 接成一条完整的聊天管线：从零教程 + 可跑骨架",
+  "author": "Saekisui",
+  "license": "AGPL-3.0-only",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node mini-chat/server.mjs",
+    "smoke": "node mini-chat/smoke-test.mjs"
+  }
+}

@@ -1,0 +1,5 @@
+node_modules/
+.DS_Store
+mini-chat/chats/
+mini-chat/uploads/
+mini-chat/.tmp-prompt.md

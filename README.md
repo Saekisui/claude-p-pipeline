@@ -1,5 +1,7 @@
 # claude-p-pipeline
 
+**简体中文** | [日本語](README.ja.md)
+
 <p align="center"><img src="docs/cover.jpg" alt="claude -p pipeline：从零搭一条聊天管线，六部分章节一览" width="100%"></p>
 
 用你自己的 Claude 订阅，把 Claude Code 的 `claude -p` 接成一条完整的聊天管线：逐字流式、思考链、工具调用、发图、自定义工具（MCP）、技能、断线续接、后端重启不丢回复。
